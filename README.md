@@ -9,6 +9,7 @@ Automatically closes inactive tabs after the configured period of inactivity.
 - 📊 **Statistics**: See how many tabs are active vs. ready to close
 - ⚙️ **Controls**: Enable/disable the extension at any time
 - 🚫 **Safety**: System pages (chrome://, edge://, etc.) never close automatically
+- 🧪 **Test mode**: Spawn overdue tabs to confirm auto-cleanup works
 
 ## Installation
 
@@ -26,6 +27,7 @@ Automatically closes inactive tabs after the configured period of inactivity.
 3. Choose how many days a tab can remain inactive
 4. Toggle the extension on or off as needed
 5. Press **Save settings**
+6. Use **Create test tabs** if you want to generate overdue tabs for a quick cleanup test
 
 ## Settings
 

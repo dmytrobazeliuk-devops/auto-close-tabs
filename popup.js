@@ -13,6 +13,7 @@ const detailsBtn = document.getElementById('detailsBtn');
 // Buttons
 const refreshBtn = document.getElementById('refreshBtn');
 const cleanupBtn = document.getElementById('cleanupBtn');
+const testModeBtn = document.getElementById('testModeBtn');
 const saveSettingsBtn = document.getElementById('saveSettingsBtn');
 
 // Settings
@@ -198,3 +199,25 @@ function showMessage(text, type = 'info') {
 
 // Auto-update statistics every 30 seconds
 setInterval(loadStats, 30000);
+  // Test mode button
+  testModeBtn.addEventListener('click', async () => {
+    showMessage('Creating test tabs...', 'info');
+    try {
+      const response = await sendMessage({ action: 'startTestMode' });
+      if (response.success) {
+        showMessage(`Created ${response.created || 0} test tabs. Closing them now...`, 'success');
+        const cleanupResponse = await sendMessage({ action: 'forceCleanup' });
+        if (cleanupResponse && cleanupResponse.success) {
+          showMessage('Test tabs closed successfully!', 'success');
+        } else {
+          showMessage('Created test tabs but cleanup failed.', 'error');
+        }
+        await loadStats();
+      } else {
+        showMessage(response.error || 'Could not start test mode', 'error');
+      }
+    } catch (error) {
+      showMessage('Error: ' + error.message, 'error');
+    }
+  });
+  

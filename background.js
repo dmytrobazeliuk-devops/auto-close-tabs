@@ -3,6 +3,9 @@ const DEFAULT_INACTIVE_DAYS = 3;
 const CHECK_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
 const STORAGE_KEY = 'tabActivity';
 const SETTINGS_KEY = 'extensionSettings';
+const TEST_TABS_KEY = 'testTabs';
+
+let testTabIds = new Set();
 
 // Helper function to check if URL is a system page
 function isSystemPage(url) {
@@ -13,6 +16,27 @@ function isSystemPage(url) {
          url.startsWith('about:') ||
          url.startsWith('moz-extension://') ||
          url.startsWith('safari-extension://');
+}
+
+async function loadTestTabs() {
+  try {
+    const data = await chrome.storage.local.get(TEST_TABS_KEY);
+    const ids = data[TEST_TABS_KEY] || [];
+    testTabIds = new Set(ids.map(Number));
+  } catch (error) {
+    console.error('Error loading test tabs:', error);
+    testTabIds = new Set();
+  }
+}
+
+async function saveTestTabs() {
+  try {
+    await chrome.storage.local.set({
+      [TEST_TABS_KEY]: Array.from(testTabIds)
+    });
+  } catch (error) {
+    console.error('Error saving test tabs:', error);
+  }
 }
 
 // Initialize existing tabs with current timestamps to avoid accidental cleanup
@@ -66,11 +90,13 @@ chrome.runtime.onInstalled.addListener(() => {
   });
   
   initializeTabActivity();
+  loadTestTabs();
 });
 
 // Re-sync tab data when the browser starts
 chrome.runtime.onStartup.addListener(() => {
   initializeTabActivity();
+  loadTestTabs();
 });
 
 // Alarm handler
@@ -103,6 +129,10 @@ async function updateTabActivity(tabId) {
   try {
     // Skip invalid tab IDs
     if (!tabId || tabId === chrome.tabs.TAB_ID_NONE) {
+      return;
+    }
+    
+    if (testTabIds.has(tabId)) {
       return;
     }
     
@@ -232,6 +262,10 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
       });
       console.log(`Removed data for tab ${tabId}`);
     }
+    
+    if (testTabIds.delete(tabId)) {
+      await saveTestTabs();
+    }
   } catch (error) {
     console.error('Error cleaning up tab data:', error);
   }
@@ -252,6 +286,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   } else if (request.action === 'saveSettings') {
     saveSettings(request.settings).then(sendResponse);
+    return true;
+  } else if (request.action === 'startTestMode') {
+    startTestMode().then(sendResponse);
     return true;
   }
 });
@@ -335,5 +372,43 @@ async function getTabStats() {
   } catch (error) {
     console.error('Error getting tab statistics:', error);
     return { error: error.message };
+  }
+}
+
+// Create overdue test tabs
+async function startTestMode() {
+  try {
+    const settings = await getSettings();
+    const data = await chrome.storage.local.get(STORAGE_KEY);
+    const tabActivity = data[STORAGE_KEY] || {};
+    const tabsToCreate = 5;
+    const outdatedTimestamp = Date.now() - ((settings.inactiveDays + 1) * 24 * 60 * 60 * 1000);
+    let created = 0;
+    
+    for (let i = 0; i < tabsToCreate; i++) {
+      try {
+        const tab = await chrome.tabs.create({
+          url: `https://example.com/?auto-close-test=${Date.now()}-${i}`,
+          active: false
+        });
+        if (tab && tab.id !== chrome.tabs.TAB_ID_NONE) {
+          tabActivity[tab.id] = outdatedTimestamp;
+          testTabIds.add(tab.id);
+          created++;
+        }
+      } catch (createError) {
+        console.error('Error creating test tab:', createError);
+      }
+    }
+    
+    await chrome.storage.local.set({
+      [STORAGE_KEY]: tabActivity,
+      [TEST_TABS_KEY]: Array.from(testTabIds)
+    });
+    
+    return { success: true, created };
+  } catch (error) {
+    console.error('Error starting test mode:', error);
+    return { success: false, error: error.message };
   }
 }
