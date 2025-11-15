@@ -27,3 +27,9 @@ node_modules/
 # Logs
 *.log
 
+# Original screenshots (keep processed ones in screenshots/ and promo/)
+*.jpg
+*.jpeg
+!screenshots/**/*.jpg
+!promo/**/*.jpg
+

@@ -6,18 +6,14 @@ const inactiveDaysLabelEl = document.getElementById('inactiveDaysLabel');
 const updatedNoteEl = document.getElementById('updatedNote');
 
 const refreshButton = document.getElementById('refreshStatsBtn');
-const openSettingsBtn = document.getElementById('openSettingsBtn');
+const backToMainBtn = document.getElementById('backToMainBtn');
 const fallbackIcon = chrome.runtime.getURL('icons/icon32.png');
 
 document.addEventListener('DOMContentLoaded', () => {
   refreshButton.addEventListener('click', loadDetailedStats);
-  openSettingsBtn.addEventListener('click', () => {
-    const popupUrl = chrome.runtime.getURL('popup.html');
-    window.open(
-      popupUrl,
-      'simple-auto-close-settings',
-      'width=420,height=620,menubar=no,toolbar=no,location=no,status=no'
-    );
+  
+  backToMainBtn.addEventListener('click', () => {
+    window.close();
   });
   
   loadDetailedStats();
