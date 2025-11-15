@@ -1,0 +1,29 @@
+# Private keys and sensitive files
+keys/
+*.pem
+*.key
+*private*
+
+# Build artifacts
+*.zip
+*.crx
+*.crx.zip
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Node modules (if any)
+node_modules/
+
+# Logs
+*.log
+

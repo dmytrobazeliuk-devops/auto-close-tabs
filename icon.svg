@@ -1,0 +1,22 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#667eea;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#764ba2;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Background with rounded corners -->
+  <rect width="128" height="128" rx="25" ry="25" fill="url(#bg)"/>
+  
+  <!-- X symbol for closing -->
+  <g stroke="white" stroke-width="8" stroke-linecap="round">
+    <line x1="45" y1="45" x2="83" y2="83"/>
+    <line x1="83" y1="45" x2="45" y2="83"/>
+  </g>
+  
+  <!-- Small dots (represent tabs) -->
+  <circle cx="95" cy="35" r="6" fill="rgba(255,255,255,0.7)"/>
+  <circle cx="35" cy="95" r="6" fill="rgba(255,255,255,0.7)"/>
+</svg>
+

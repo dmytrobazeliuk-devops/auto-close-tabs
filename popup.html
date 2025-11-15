@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple Auto Close Inactive Tabs</title>
+    <style>
+        body {
+            width: 350px;
+            min-height: 200px;
+            margin: 0;
+            padding: 20px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        
+        .header h1 {
+            margin: 0;
+            font-size: 18px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        
+        .header-icon {
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+        }
+        
+        .header p {
+            margin: 5px 0 0 0;
+            font-size: 12px;
+            opacity: 0.8;
+        }
+        
+        .stats-container {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 15px;
+            backdrop-filter: blur(10px);
+        }
+        
+        .stat-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        
+        .stat-item:last-child {
+            margin-bottom: 0;
+        }
+        
+        .stat-label {
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        .stat-value {
+            font-size: 14px;
+            font-weight: 600;
+            background: rgba(255, 255, 255, 0.2);
+            padding: 2px 8px;
+            border-radius: 12px;
+        }
+        
+        .inactive-value {
+            background: rgba(255, 99, 99, 0.3);
+        }
+        
+        .active-value {
+            background: rgba(99, 255, 99, 0.3);
+        }
+        
+        .controls {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        
+        .btn {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        
+        .btn-primary {
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+        
+        .btn-primary:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-1px);
+        }
+        
+        .btn-danger {
+            background: rgba(255, 99, 99, 0.3);
+            color: white;
+            border: 1px solid rgba(255, 99, 99, 0.5);
+        }
+        
+        .btn-danger:hover {
+            background: rgba(255, 99, 99, 0.5);
+            transform: translateY(-1px);
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 20px;
+            font-size: 14px;
+            opacity: 0.7;
+        }
+        
+        .error {
+            background: rgba(255, 99, 99, 0.2);
+            border: 1px solid rgba(255, 99, 99, 0.5);
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 15px;
+            font-size: 12px;
+        }
+        
+        .success {
+            background: rgba(99, 255, 99, 0.2);
+            border: 1px solid rgba(99, 255, 99, 0.5);
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 15px;
+            font-size: 12px;
+        }
+        
+        .footer {
+            text-align: center;
+            margin-top: 15px;
+            font-size: 11px;
+            opacity: 0.7;
+        }
+        
+        .settings-container {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 15px;
+            backdrop-filter: blur(10px);
+        }
+        
+        .settings-title {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .setting-item {
+            margin-bottom: 10px;
+        }
+        
+        .setting-item:last-child {
+            margin-bottom: 0;
+        }
+        
+        .setting-label {
+            font-size: 12px;
+            margin-bottom: 5px;
+            display: block;
+        }
+        
+        .setting-input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            font-size: 12px;
+        }
+        
+        .setting-input:focus {
+            outline: none;
+            border-color: rgba(255, 255, 255, 0.5);
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        .setting-input::placeholder {
+            color: rgba(255, 255, 255, 0.6);
+        }
+        
+        .toggle-container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .toggle {
+            position: relative;
+            width: 40px;
+            height: 20px;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 20px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .toggle.active {
+            background: rgba(99, 255, 99, 0.5);
+        }
+        
+        .toggle-slider {
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 16px;
+            height: 16px;
+            background: white;
+            border-radius: 50%;
+            transition: all 0.3s ease;
+        }
+        
+        .toggle.active .toggle-slider {
+            transform: translateX(20px);
+        }
+        
+        .tabs {
+            display: flex;
+            margin-bottom: 15px;
+        }
+        
+        .tab {
+            flex: 1;
+            padding: 8px 12px;
+            background: rgba(255, 255, 255, 0.1);
+            border: none;
+            color: white;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .tab:first-child {
+            border-radius: 8px 0 0 8px;
+        }
+        
+        .tab:last-child {
+            border-radius: 0 8px 8px 0;
+        }
+        
+        .tab.active {
+            background: rgba(255, 255, 255, 0.3);
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>
+            <img src="icons/icon32.png" alt="Simple Auto Close Inactive Tabs icon" class="header-icon">
+            <span>Simple Auto Close Inactive Tabs</span>
+        </h1>
+        <p>Automatically closes inactive tabs</p>
+    </div>
+    
+    <div id="loading" class="loading">
+        Loading statistics...
+    </div>
+    
+    <div id="content" style="display: none;">
+        <div class="tabs">
+            <button class="tab active" data-tab="stats">📊 Stats</button>
+            <button class="tab" data-tab="settings">⚙️ Settings</button>
+        </div>
+        
+        <div id="stats-tab" class="tab-content active">
+            <div class="stats-container">
+                <div class="stat-item">
+                    <span class="stat-label">Total tabs:</span>
+                    <span class="stat-value" id="totalTabs">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Active:</span>
+                    <span class="stat-value active-value" id="activeTabs">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Inactive:</span>
+                    <span class="stat-value inactive-value" id="inactiveTabs">0</span>
+                </div>
+            </div>
+            
+            <div class="controls">
+                <button id="refreshBtn" class="btn btn-primary">
+                    🔄 Refresh stats
+                </button>
+                <button id="cleanupBtn" class="btn btn-danger">
+                    🗑️ Close inactive now
+                </button>
+                <button id="detailsBtn" class="btn btn-primary">
+                    📋 Detailed statistics
+                </button>
+            </div>
+        </div>
+        
+        <div id="settings-tab" class="tab-content">
+            <div class="settings-container">
+                <div class="settings-title">
+                    ⚙️ Extension settings
+                </div>
+                
+                <div class="setting-item">
+                    <div class="toggle-container">
+                        <span class="setting-label">Enable extension</span>
+                        <div class="toggle" id="enabledToggle">
+                            <div class="toggle-slider"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="setting-item">
+                    <label class="setting-label" for="inactiveDays">
+                        Inactive days before closing:
+                    </label>
+                    <input 
+                        type="number" 
+                        id="inactiveDays" 
+                        class="setting-input" 
+                        min="1" 
+                        max="365" 
+                        placeholder="3"
+                    >
+                </div>
+                
+                <div class="setting-item">
+                    <button id="saveSettingsBtn" class="btn btn-primary" style="width: 100%;">
+                        💾 Save settings
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <span id="footerText">Inactive tabs are closed automatically every 24 hours</span>
+        </div>
+    </div>
+    
+    <div id="message" style="display: none;"></div>
+    
+    <script src="popup.js"></script>
+</body>
+</html>
