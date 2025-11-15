@@ -2,13 +2,13 @@
 const loadingEl = document.getElementById('loading');
 const contentEl = document.getElementById('content');
 const messageEl = document.getElementById('message');
-const footerTextEl = document.getElementById('footerText');
+// Footer removed
 
 // Statistics
 const totalTabsEl = document.getElementById('totalTabs');
 const activeTabsEl = document.getElementById('activeTabs');
 const inactiveTabsEl = document.getElementById('inactiveTabs');
-const detailsBtn = document.getElementById('detailsBtn');
+const perTabListEl = document.getElementById('perTabList');
 
 // Buttons
 const refreshBtn = document.getElementById('refreshBtn');
@@ -56,13 +56,6 @@ function setupEventListeners() {
   // Save settings button
   saveSettingsBtn.addEventListener('click', saveSettings);
   
-  // Detailed stats button
-  detailsBtn.addEventListener('click', () => {
-    chrome.tabs.create({
-      url: chrome.runtime.getURL('stats.html')
-    });
-  });
-  
   // Enable/disable toggle
   enabledToggle.addEventListener('click', () => {
     enabledToggle.classList.toggle('active');
@@ -97,8 +90,7 @@ async function loadSettings() {
     enabledToggle.classList.toggle('active', settings.enabled);
     inactiveDaysInput.value = settings.inactiveDays;
     
-    // Update footer text
-    footerTextEl.textContent = `Inactive tabs are closed automatically every 24 hours (after ${settings.inactiveDays} days of inactivity)`;
+    // Footer removed - no longer needed
     
   } catch (error) {
     console.error('Error loading settings:', error);
@@ -157,9 +149,14 @@ async function loadStats() {
     totalTabsEl.textContent = stats.totalTabs;
     activeTabsEl.textContent = stats.activeTabs;
     inactiveTabsEl.textContent = stats.inactiveTabs;
+    // Render per-tab details if available
+    try {
+      renderPerTabList(stats.tabDetails || []);
+    } catch (err) {
+      console.error('Error rendering per-tab list:', err);
+    }
     
-    // Update footer text with current number of days
-    footerTextEl.textContent = `Inactive tabs are closed automatically every 24 hours (after ${stats.inactiveDays} days of inactivity)`;
+    // Footer removed - no longer needed
     
     loadingEl.style.display = 'none';
     contentEl.style.display = 'block';
@@ -170,6 +167,64 @@ async function loadStats() {
     loadingEl.style.display = 'none';
     contentEl.style.display = 'block';
   }
+}
+
+// Render per-tab list
+function renderPerTabList(tabDetails) {
+  if (!perTabListEl) return;
+  perTabListEl.innerHTML = '';
+
+  if (!Array.isArray(tabDetails) || tabDetails.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'tab-row';
+    empty.textContent = 'No tabs available';
+    perTabListEl.appendChild(empty);
+    return;
+  }
+
+  for (const detail of tabDetails) {
+    const row = document.createElement('div');
+    row.className = 'tab-row';
+    row.dataset.tabId = detail.id;
+
+    const img = document.createElement('img');
+    img.className = 'tab-favicon';
+    img.alt = '';
+    img.src = detail.favicon || 'icons/icon16.png';
+
+    const title = document.createElement('div');
+    title.className = 'tab-title';
+    title.title = detail.title || detail.url || '';
+    title.textContent = detail.title || detail.url || 'Untitled';
+
+    const hours = document.createElement('div');
+    hours.className = 'tab-hours tab-status ' + (detail.status === 'inactive' ? 'inactive' : 'active');
+    const hrs = Number(detail.inactiveHours) || 0;
+    hours.textContent = hrs >= 1 ? `${hrs.toFixed(1)} h` : '<1 h';
+
+    row.appendChild(img);
+    row.appendChild(title);
+    row.appendChild(hours);
+    perTabListEl.appendChild(row);
+  }
+}
+
+// Click-to-focus behavior: clicking a row focuses that tab and closes the popup
+if (perTabListEl) {
+  perTabListEl.addEventListener('click', (e) => {
+    const row = e.target.closest('.tab-row');
+    if (!row) return;
+    const tabId = Number(row.dataset.tabId);
+    if (!tabId) return;
+
+    try {
+      chrome.tabs.update(tabId, { active: true });
+      // close popup after focusing tab
+      window.close();
+    } catch (err) {
+      console.error('Error focusing tab:', err);
+    }
+  });
 }
 
 // Send message to background script
