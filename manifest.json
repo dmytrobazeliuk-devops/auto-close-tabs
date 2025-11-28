@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Simple Auto Close Inactive Tabs",
-  "version": "1.0",
+  "version": "1.2",
   "description": "Automatically closes inactive tabs after 3 days of inactivity",
   "permissions": [
     "tabs",

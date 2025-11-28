@@ -200,7 +200,13 @@ function renderPerTabList(tabDetails) {
     const hours = document.createElement('div');
     hours.className = 'tab-hours tab-status ' + (detail.status === 'inactive' ? 'inactive' : 'active');
     const hrs = Number(detail.inactiveHours) || 0;
-    hours.textContent = hrs >= 1 ? `${hrs.toFixed(1)} h` : '<1 h';
+    // Display in minutes if less than 1 hour, otherwise in hours
+    if (hrs >= 1) {
+      hours.textContent = `${hrs.toFixed(1)} h`;
+    } else {
+      const minutes = Math.round(hrs * 60);
+      hours.textContent = minutes > 0 ? `${minutes} min` : '<1 min';
+    }
 
     row.appendChild(img);
     row.appendChild(title);

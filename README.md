@@ -58,8 +58,32 @@ auto-close-tabs/
 └── README.md              # This file
 ```
 
+## Changelog
+
+### Version 1.1 (2025-11-19)
+
+**Fixed:**
+- ✅ **Timer persistence across browser restarts**: Fixed critical bug where inactivity timers were reset after browser restart
+- ✅ **URL-based tracking**: Implemented dual tracking system (by tab ID and URL) to preserve inactivity timestamps across browser sessions
+- ✅ **Proper inactivity detection**: Timers now only reset when user actively interacts with tabs, not when tabs are restored from session
+- ✅ **Session restoration**: Tabs restored after browser restart now maintain their original inactivity time
+
+**Technical improvements:**
+- Added URL-based activity tracking alongside ID-based tracking
+- Improved `initializeTabActivity()` to restore timestamps from URL records
+- Modified `updateTabActivity()` to only update timestamps on user interaction (tab activation), not on page load
+- Enhanced logging for better debugging
+
+### Version 1.0 (2025-11-15)
+
+- Initial release
+- Basic inactivity tracking and auto-close functionality
+- Configurable inactive days (1-365)
+- Statistics and test mode
+
 ## Notes
 
 - The extension never closes system pages (chrome://, chrome-extension://, edge://, about:, etc.)
 - Tab activity data is stored locally only
 - When a tab closes manually, its saved data is removed automatically
+- **Inactivity is tracked by URL, so timers persist across browser restarts** (v1.1+)
