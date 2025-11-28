@@ -47,12 +47,13 @@ async function saveTestTabs() {
 async function initializeTabActivity() {
   try {
     const [data, tabs] = await Promise.all([
-      chrome.storage.local.get([STORAGE_KEY, 'urlActivity']),
+      chrome.storage.local.get([STORAGE_KEY, 'urlActivity', 'pendingTabs']),
       chrome.tabs.query({})
     ]);
     
     const tabActivity = data[STORAGE_KEY] || {};
     const urlActivity = data['urlActivity'] || {}; // Track by URL to survive restarts
+    const pendingTabs = data['pendingTabs'] || {}; // Tabs without URL yet (waiting for load)
     const now = Date.now();
     const openTabIds = new Set();
     const openTabUrls = new Set();
@@ -74,11 +75,13 @@ async function initializeTabActivity() {
         openTabUrls.add(tab.url);
       }
       
-      // Priority: URL-based tracking > ID-based tracking > new tab
+      // Priority: URL-based tracking > ID-based tracking > pending tab > wait
       // This ensures timers continue after restart
       if (tab.url && urlActivity[tab.url]) {
         // Restore timestamp from URL-based record (preserves inactivity time across restarts)
         tabActivity[tab.id] = urlActivity[tab.url];
+        // Remove from pending since we found the URL
+        delete pendingTabs[tab.id];
         console.log(`Restored timestamp for tab ${tab.id} from URL: ${tab.url}, timestamp: ${urlActivity[tab.url]} (continuing timer after restart)`);
       } else if (tabActivity[tab.id]) {
         // Tab has ID record - sync to URL record if URL exists
@@ -89,14 +92,36 @@ async function initializeTabActivity() {
           }
         }
         console.log(`Preserved timestamp for tab ${tab.id} in same session`);
-      } else {
-        // Truly new tab (not restored from session) - only then set current time
-        // This happens only for tabs created AFTER extension initialization
-        tabActivity[tab.id] = now;
+      } else if (pendingTabs[tab.id]) {
+        // Tab was pending (waiting for URL to load after restart)
         if (tab.url) {
-          urlActivity[tab.url] = now;
+          // URL loaded - restore timestamp if available, otherwise keep pending timestamp
+          const pendingTimestamp = pendingTabs[tab.id];
+          tabActivity[tab.id] = urlActivity[tab.url] || pendingTimestamp;
+          if (!urlActivity[tab.url]) {
+            urlActivity[tab.url] = pendingTimestamp;
+          }
+          delete pendingTabs[tab.id];
+          console.log(`Restored pending tab ${tab.id} with URL: ${tab.url}`);
+        } else {
+          // Still no URL - keep as pending
+          console.log(`Tab ${tab.id} still pending (no URL yet)`);
         }
-        console.log(`New tab ${tab.id}${tab.url ? ` (${tab.url})` : ''} - starting tracking from now`);
+      } else {
+        // Tab without URL and no previous record
+        // IMPORTANT: Don't initialize immediately - this might be a tab still loading after restart
+        // Mark as pending and initialize only after it loads or after timeout
+        if (!tab.url || tab.url === 'about:blank' || tab.status === 'loading') {
+          // Tab is still loading - mark as pending with current time
+          // This timestamp will be used if we never find a URL record
+          pendingTabs[tab.id] = now;
+          console.log(`Tab ${tab.id} marked as pending (loading/no URL yet)`);
+        } else {
+          // Tab has URL but no record - truly new tab
+          tabActivity[tab.id] = now;
+          urlActivity[tab.url] = now;
+          console.log(`New tab ${tab.id} (${tab.url}) - starting tracking from now`);
+        }
       }
     }
     
@@ -108,19 +133,39 @@ async function initializeTabActivity() {
       }
     }
     
-    // Remove URL records for URLs that are no longer open
+    // Clean up pending tabs that are closed
+    for (const tabId of Object.keys(pendingTabs)) {
+      const numericId = Number(tabId);
+      if (!openTabIds.has(numericId)) {
+        delete pendingTabs[tabId];
+      }
+    }
+    
+    // Don't remove URL records yet - they might be needed for pending tabs
+    // Only remove URLs that are definitely not open (no pending tabs either)
     for (const url of Object.keys(urlActivity)) {
       if (!openTabUrls.has(url)) {
-        delete urlActivity[url];
+        // Check if any pending tab might restore this URL
+        const hasPendingTab = Object.keys(pendingTabs).some(tabId => {
+          const tab = tabs.find(t => t.id === Number(tabId));
+          return tab && !tab.url; // Pending tab without URL yet
+        });
+        
+        // Only delete if no pending tabs exist (they might need this URL)
+        if (!hasPendingTab) {
+          delete urlActivity[url];
+        }
       }
     }
     
     await chrome.storage.local.set({
       [STORAGE_KEY]: tabActivity,
-      'urlActivity': urlActivity
+      'urlActivity': urlActivity,
+      'pendingTabs': pendingTabs
     });
     
     console.log('Tab activity initialized. Timers preserved and continue after browser/PC restart.');
+    console.log(`Active: ${Object.keys(tabActivity).length}, Pending: ${Object.keys(pendingTabs).length}`);
   } catch (error) {
     console.error('Error initializing tab activity:', error);
   }
@@ -147,12 +192,13 @@ async function performMultiLevelSync() {
 async function verifyAndRepairTimers() {
   try {
     const [data, tabs] = await Promise.all([
-      chrome.storage.local.get([STORAGE_KEY, 'urlActivity']),
+      chrome.storage.local.get([STORAGE_KEY, 'urlActivity', 'pendingTabs']),
       chrome.tabs.query({})
     ]);
     
     const tabActivity = data[STORAGE_KEY] || {};
     const urlActivity = data['urlActivity'] || {};
+    const pendingTabs = data['pendingTabs'] || {};
     let repaired = 0;
     
     for (const tab of tabs) {
@@ -163,11 +209,13 @@ async function verifyAndRepairTimers() {
       // Check if tab has timer but URL doesn't (or vice versa)
       const hasTabTimer = !!tabActivity[tab.id];
       const hasUrlTimer = tab.url && !!urlActivity[tab.url];
+      const isPending = !!pendingTabs[tab.id];
       
       if (tab.url) {
         if (hasUrlTimer && !hasTabTimer) {
           // URL has timer but tab doesn't - restore from URL
           tabActivity[tab.id] = urlActivity[tab.url];
+          delete pendingTabs[tab.id]; // No longer pending
           repaired++;
           console.log(`[Verify] Repaired: Restored timer for tab ${tab.id} from URL ${tab.url}`);
         } else if (hasTabTimer && !hasUrlTimer) {
@@ -176,33 +224,42 @@ async function verifyAndRepairTimers() {
           repaired++;
           console.log(`[Verify] Repaired: Synced timer from tab ${tab.id} to URL ${tab.url}`);
         } else if (!hasTabTimer && !hasUrlTimer) {
-          // Neither has timer - this is a truly new tab
-          // Only initialize if tab was created recently (within last 5 minutes)
-          // This prevents resetting timers for tabs that were just restored from session
-          const now = Date.now();
-          const fiveMinutesAgo = now - (5 * 60 * 1000);
-          
-          // Check if tab was created recently by checking if it has a recent timestamp in storage
-          // If not, it might be a restored tab - don't initialize
-          const tabCreatedRecently = tab.id && (!tabActivity[tab.id] || tabActivity[tab.id] > fiveMinutesAgo);
-          
-          if (tabCreatedRecently) {
-            tabActivity[tab.id] = now;
-            urlActivity[tab.url] = now;
-            repaired++;
-            console.log(`[Verify] Repaired: Initialized timer for new tab ${tab.id} (${tab.url})`);
-          } else {
-            // Tab might be restored from session - don't reset timer
-            console.log(`[Verify] Skipped: Tab ${tab.id} might be restored from session, not initializing timer`);
+          // Neither has timer
+          if (isPending) {
+            // Was marked as pending - now has URL
+            // Try to find matching URL in urlActivity, otherwise use pending timestamp
+            const matchingUrl = Object.keys(urlActivity).find(url => url === tab.url);
+            if (matchingUrl) {
+              tabActivity[tab.id] = urlActivity[matchingUrl];
+              delete pendingTabs[tab.id];
+              repaired++;
+              console.log(`[Verify] Resolved pending tab ${tab.id}: found URL ${tab.url} in storage`);
+            } else {
+              // No URL record found - use pending timestamp
+              tabActivity[tab.id] = pendingTabs[tab.id];
+              urlActivity[tab.url] = pendingTabs[tab.id];
+              delete pendingTabs[tab.id];
+              repaired++;
+              console.log(`[Verify] Resolved pending tab ${tab.id}: using pending timestamp`);
+            }
+          } else if (tab.status !== 'loading' && tab.url !== 'about:blank') {
+            // Tab is fully loaded and has URL - this is truly a new tab
+            // IMPORTANT: Don't initialize - let the onCreated/onUpdated handlers do it
+            // This function should only RESTORE, not CREATE new timers
+            console.log(`[Verify] Skipped: Tab ${tab.id} will be initialized by event handlers`);
           }
         }
+      } else if (isPending) {
+        // Tab is pending and still has no URL - keep it pending
+        console.log(`[Verify] Tab ${tab.id} still pending (no URL)`);
       }
     }
     
     if (repaired > 0) {
       await chrome.storage.local.set({
         [STORAGE_KEY]: tabActivity,
-        'urlActivity': urlActivity
+        'urlActivity': urlActivity,
+        'pendingTabs': pendingTabs
       });
       console.log(`[Verify] Repaired ${repaired} timer(s)`);
     } else {
@@ -217,12 +274,13 @@ async function verifyAndRepairTimers() {
 async function syncUrlBasedTracking() {
   try {
     const [data, tabs] = await Promise.all([
-      chrome.storage.local.get([STORAGE_KEY, 'urlActivity']),
+      chrome.storage.local.get([STORAGE_KEY, 'urlActivity', 'pendingTabs']),
       chrome.tabs.query({})
     ]);
     
     const tabActivity = data[STORAGE_KEY] || {};
     const urlActivity = data['urlActivity'] || {};
+    const pendingTabs = data['pendingTabs'] || {};
     let synced = 0;
     
     // Group tabs by URL
@@ -262,6 +320,7 @@ async function syncUrlBasedTracking() {
           if (!tabActivity[tabId]) {
             // Tab has no timer - restore from URL (preserves inactivity)
             tabActivity[tabId] = urlActivity[url];
+            delete pendingTabs[tabId]; // No longer pending
             synced++;
             console.log(`[Sync] Restored timer for tab ${tabId} from URL ${url} (preserved inactivity)`);
           } else if (tabActivity[tabId] > urlActivity[url]) {
@@ -278,7 +337,8 @@ async function syncUrlBasedTracking() {
     if (synced > 0) {
       await chrome.storage.local.set({
         [STORAGE_KEY]: tabActivity,
-        'urlActivity': urlActivity
+        'urlActivity': urlActivity,
+        'pendingTabs': pendingTabs
       });
       console.log(`[Sync] Synchronized ${synced} timer(s) across URL-based tracking`);
     } else {
@@ -400,16 +460,19 @@ async function updateTabActivity(tabId, isUserAction = false) {
     }
     
     const now = Date.now();
-    const data = await chrome.storage.local.get([STORAGE_KEY, 'urlActivity']);
+    const data = await chrome.storage.local.get([STORAGE_KEY, 'urlActivity', 'pendingTabs']);
     const tabActivity = data[STORAGE_KEY] || {};
     const urlActivity = data['urlActivity'] || {};
+    const pendingTabs = data['pendingTabs'] || {};
     
     // Get tab URL for URL-based tracking
     let tabUrl = null;
+    let tabStatus = null;
     try {
       const tab = await chrome.tabs.get(tabId);
       if (tab && tab.url && !isSystemPage(tab.url)) {
         tabUrl = tab.url;
+        tabStatus = tab.status;
       }
     } catch (error) {
       // Tab might be closed, ignore
@@ -421,27 +484,54 @@ async function updateTabActivity(tabId, isUserAction = false) {
       if (tabUrl) {
         urlActivity[tabUrl] = now;
       }
+      delete pendingTabs[tabId]; // No longer pending
       console.log(`User activity on tab ${tabId}${tabUrl ? ` (URL: ${tabUrl})` : ''} - updated timestamp`);
     } else {
       // Just tracking tab existence (onCreated, onUpdated) - preserve existing timestamps
-      if (tabUrl && urlActivity[tabUrl]) {
-        // Tab with URL that we've seen before - restore timestamp, don't reset
-        tabActivity[tabId] = urlActivity[tabUrl];
-        console.log(`Restored timestamp for tab ${tabId} from URL: ${tabUrl} (preserved inactivity)`);
-      } else if (!tabActivity[tabId]) {
-        // Truly new tab - start tracking from now
-        tabActivity[tabId] = now;
-        if (tabUrl) {
-          urlActivity[tabUrl] = now;
+      const wasPending = !!pendingTabs[tabId];
+      
+      if (wasPending && tabUrl) {
+        // Tab was pending and now has URL - restore from URL or use pending timestamp
+        if (urlActivity[tabUrl]) {
+          // Found URL in storage - restore timestamp
+          tabActivity[tabId] = urlActivity[tabUrl];
+          console.log(`Resolved pending tab ${tabId}: restored from URL ${tabUrl}`);
+        } else {
+          // No URL record - use pending timestamp
+          tabActivity[tabId] = pendingTabs[tabId];
+          urlActivity[tabUrl] = pendingTabs[tabId];
+          console.log(`Resolved pending tab ${tabId}: using pending timestamp`);
         }
-        console.log(`New tab ${tabId}${tabUrl ? ` (URL: ${tabUrl})` : ''} - starting tracking`);
+        delete pendingTabs[tabId];
+      } else if (tabUrl && urlActivity[tabUrl]) {
+        // Tab with URL that we've seen before - restore timestamp, don't reset
+        if (!tabActivity[tabId] || tabActivity[tabId] > urlActivity[tabUrl]) {
+          // Only restore if tab doesn't have timer or has newer timer
+          tabActivity[tabId] = urlActivity[tabUrl];
+          console.log(`Restored timestamp for tab ${tabId} from URL: ${tabUrl} (preserved inactivity)`);
+        }
+      } else if (!tabActivity[tabId]) {
+        // Tab has no timer yet
+        if (!tabUrl || tabStatus === 'loading' || tabUrl === 'about:blank') {
+          // Tab is still loading - mark as pending if not already
+          if (!wasPending) {
+            pendingTabs[tabId] = now;
+            console.log(`Tab ${tabId} marked as pending (loading)`);
+          }
+        } else {
+          // Tab is fully loaded with URL - truly new tab
+          tabActivity[tabId] = now;
+          urlActivity[tabUrl] = now;
+          console.log(`New tab ${tabId} (${tabUrl}) - starting tracking`);
+        }
       }
       // If tab already has ID record, keep it (don't overwrite)
     }
     
     await chrome.storage.local.set({
       [STORAGE_KEY]: tabActivity,
-      'urlActivity': urlActivity
+      'urlActivity': urlActivity,
+      'pendingTabs': pendingTabs
     });
   } catch (error) {
     console.error('Error updating tab activity:', error);
@@ -478,9 +568,10 @@ async function checkAndCloseInactiveTabs() {
       return;
     }
     
-    const data = await chrome.storage.local.get([STORAGE_KEY, 'urlActivity']);
+    const data = await chrome.storage.local.get([STORAGE_KEY, 'urlActivity', 'pendingTabs']);
     const tabActivity = data[STORAGE_KEY] || {};
     const urlActivity = data['urlActivity'] || {};
+    const pendingTabs = data['pendingTabs'] || {};
     const now = Date.now();
     const inactiveThreshold = now - (settings.inactiveDays * 24 * 60 * 60 * 1000);
     
@@ -502,6 +593,10 @@ async function checkAndCloseInactiveTabs() {
         lastActivity = urlActivity[tab.url];
         tabActivity[tab.id] = lastActivity;
         console.log(`[Cleanup] Verified: Restored timer for tab ${tab.id} from URL before checking inactivity`);
+      } else if (!lastActivity && pendingTabs[tab.id]) {
+        // Tab is still pending - use pending timestamp for now
+        lastActivity = pendingTabs[tab.id];
+        console.log(`[Cleanup] Using pending timestamp for tab ${tab.id}`);
       }
       
       if (!lastActivity) {
@@ -517,7 +612,8 @@ async function checkAndCloseInactiveTabs() {
     // Save verified timers (always save to ensure consistency)
     await chrome.storage.local.set({
       [STORAGE_KEY]: tabActivity,
-      'urlActivity': urlActivity
+      'urlActivity': urlActivity,
+      'pendingTabs': pendingTabs
     });
     
     // Close inactive tabs
@@ -530,6 +626,8 @@ async function checkAndCloseInactiveTabs() {
           await chrome.tabs.remove(tabInfo.id);
           // Remove activity record by ID
           delete tabActivity[tabInfo.id];
+          // Remove pending record if exists
+          delete pendingTabs[tabInfo.id];
           // Also remove URL-based record if exists
           if (tabInfo.url && urlActivity[tabInfo.url]) {
             delete urlActivity[tabInfo.url];
@@ -546,7 +644,8 @@ async function checkAndCloseInactiveTabs() {
       // Update saved data
       await chrome.storage.local.set({
         [STORAGE_KEY]: tabActivity,
-        'urlActivity': urlActivity
+        'urlActivity': urlActivity,
+        'pendingTabs': pendingTabs
       });
       
       // Show notification
@@ -572,13 +671,19 @@ async function checkAndCloseInactiveTabs() {
 // Clean up data for closed tabs
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   try {
-    const data = await chrome.storage.local.get([STORAGE_KEY, 'urlActivity']);
+    const data = await chrome.storage.local.get([STORAGE_KEY, 'urlActivity', 'pendingTabs']);
     const tabActivity = data[STORAGE_KEY] || {};
     const urlActivity = data['urlActivity'] || {};
+    const pendingTabs = data['pendingTabs'] || {};
     let updated = false;
     
     if (tabActivity[tabId]) {
       delete tabActivity[tabId];
+      updated = true;
+    }
+    
+    if (pendingTabs[tabId]) {
+      delete pendingTabs[tabId];
       updated = true;
     }
     
@@ -588,7 +693,8 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
     if (updated) {
       await chrome.storage.local.set({
         [STORAGE_KEY]: tabActivity,
-        'urlActivity': urlActivity
+        'urlActivity': urlActivity,
+        'pendingTabs': pendingTabs
       });
       console.log(`Removed data for tab ${tabId}`);
     }
@@ -652,9 +758,10 @@ async function getTabStats() {
     await syncUrlBasedTracking(); // Only sync, don't repair
     
     const settings = await getSettings();
-    const data = await chrome.storage.local.get([STORAGE_KEY, 'urlActivity']);
+    const data = await chrome.storage.local.get([STORAGE_KEY, 'urlActivity', 'pendingTabs']);
     const tabActivity = data[STORAGE_KEY] || {};
     const urlActivity = data['urlActivity'] || {};
+    const pendingTabs = data['pendingTabs'] || {};
     const now = Date.now();
     const inactiveThreshold = now - (settings.inactiveDays * 24 * 60 * 60 * 1000);
     
@@ -671,14 +778,19 @@ async function getTabStats() {
       
       let lastActivity = tabActivity[tab.id];
       
-      // Level 5: Verify timer exists, if not try to restore from URL
+      // Level 5: Verify timer exists, if not try to restore from URL or pending
       if (!lastActivity && tab.url && urlActivity[tab.url]) {
         // Restore from URL-based tracking
         lastActivity = urlActivity[tab.url];
         tabActivity[tab.id] = lastActivity;
         verifiedCount++;
         console.log(`[Stats] Verified: Restored timer for tab ${tab.id} from URL ${tab.url}`);
+      } else if (!lastActivity && pendingTabs[tab.id]) {
+        // Use pending timestamp for display purposes
+        lastActivity = pendingTabs[tab.id];
+        console.log(`[Stats] Using pending timestamp for tab ${tab.id}`);
       }
+      
       const inactiveHours = lastActivity
         ? Math.max(0, (now - lastActivity) / (60 * 60 * 1000))
         : 0;
@@ -715,7 +827,8 @@ async function getTabStats() {
     if (verifiedCount > 0) {
       await chrome.storage.local.set({
         [STORAGE_KEY]: tabActivity,
-        'urlActivity': urlActivity
+        'urlActivity': urlActivity,
+        'pendingTabs': pendingTabs
       });
       console.log(`[Stats] Saved ${verifiedCount} verified timer(s)`);
     }
