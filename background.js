@@ -64,39 +64,46 @@ async function initializeTabActivity() {
         continue;
       }
       
+      // Get effective URL - use pendingUrl if url is not available yet (tab still loading after restart)
+      const effectiveUrl = tab.url || tab.pendingUrl;
+      
       // Skip system pages
-      if (tab.url && isSystemPage(tab.url)) {
+      if (effectiveUrl && isSystemPage(effectiveUrl)) {
         continue;
       }
       
       openTabIds.add(tab.id);
-      if (tab.url) {
-        openTabUrls.add(tab.url);
+      if (effectiveUrl) {
+        openTabUrls.add(effectiveUrl);
       }
       
       // Priority: URL-based tracking > ID-based tracking > new tab
       // This ensures timers continue after restart
-      if (tab.url && urlActivity[tab.url]) {
+      if (effectiveUrl && urlActivity[effectiveUrl]) {
         // Restore timestamp from URL-based record (preserves inactivity time across restarts)
-        tabActivity[tab.id] = urlActivity[tab.url];
-        console.log(`Restored timestamp for tab ${tab.id} from URL: ${tab.url}, timestamp: ${urlActivity[tab.url]} (continuing timer after restart)`);
+        tabActivity[tab.id] = urlActivity[effectiveUrl];
+        console.log(`Restored timestamp for tab ${tab.id} from URL: ${effectiveUrl}, timestamp: ${urlActivity[effectiveUrl]} (continuing timer after restart)`);
       } else if (tabActivity[tab.id]) {
         // Tab has ID record - sync to URL record if URL exists
-        if (tab.url) {
+        if (effectiveUrl) {
           // Use the older timestamp (preserve inactivity)
-          if (!urlActivity[tab.url] || urlActivity[tab.url] > tabActivity[tab.id]) {
-            urlActivity[tab.url] = tabActivity[tab.id];
+          if (!urlActivity[effectiveUrl] || urlActivity[effectiveUrl] > tabActivity[tab.id]) {
+            urlActivity[effectiveUrl] = tabActivity[tab.id];
           }
         }
         console.log(`Preserved timestamp for tab ${tab.id} in same session`);
       } else {
+        // Tab without URL or pending URL - might be still loading after restart
+        // DON'T initialize as new tab yet - wait for URL to be available
+        if (!effectiveUrl) {
+          console.log(`Tab ${tab.id} has no URL yet (still loading after restart) - skipping initialization`);
+          continue;
+        }
         // Truly new tab (not restored from session) - only then set current time
         // This happens only for tabs created AFTER extension initialization
         tabActivity[tab.id] = now;
-        if (tab.url) {
-          urlActivity[tab.url] = now;
-        }
-        console.log(`New tab ${tab.id}${tab.url ? ` (${tab.url})` : ''} - starting tracking from now`);
+        urlActivity[effectiveUrl] = now;
+        console.log(`New tab ${tab.id} (${effectiveUrl}) - starting tracking from now`);
       }
     }
     
@@ -108,12 +115,10 @@ async function initializeTabActivity() {
       }
     }
     
-    // Remove URL records for URLs that are no longer open
-    for (const url of Object.keys(urlActivity)) {
-      if (!openTabUrls.has(url)) {
-        delete urlActivity[url];
-      }
-    }
+    // DON'T remove URL records immediately after restart!
+    // Tabs might still be loading and URLs might not be available yet.
+    // URL records will be cleaned up when tabs are explicitly closed by user (onRemoved handler)
+    // or during the delayed cleanup below
     
     await chrome.storage.local.set({
       [STORAGE_KEY]: tabActivity,
@@ -121,8 +126,51 @@ async function initializeTabActivity() {
     });
     
     console.log('Tab activity initialized. Timers preserved and continue after browser/PC restart.');
+    
+    // Schedule delayed URL cleanup after tabs have fully loaded (30 seconds)
+    // This gives time for all restored tabs to load their URLs
+    setTimeout(() => {
+      cleanupStaleUrlRecords();
+    }, 30000);
   } catch (error) {
     console.error('Error initializing tab activity:', error);
+  }
+}
+
+// Cleanup stale URL records (runs after tabs have fully loaded)
+async function cleanupStaleUrlRecords() {
+  try {
+    const [data, tabs] = await Promise.all([
+      chrome.storage.local.get('urlActivity'),
+      chrome.tabs.query({})
+    ]);
+    
+    const urlActivity = data['urlActivity'] || {};
+    const openTabUrls = new Set();
+    
+    for (const tab of tabs) {
+      const effectiveUrl = tab.url || tab.pendingUrl;
+      if (effectiveUrl && !isSystemPage(effectiveUrl)) {
+        openTabUrls.add(effectiveUrl);
+      }
+    }
+    
+    let cleaned = 0;
+    for (const url of Object.keys(urlActivity)) {
+      if (!openTabUrls.has(url)) {
+        delete urlActivity[url];
+        cleaned++;
+      }
+    }
+    
+    if (cleaned > 0) {
+      await chrome.storage.local.set({ 'urlActivity': urlActivity });
+      console.log(`[Delayed Cleanup] Removed ${cleaned} stale URL record(s)`);
+    } else {
+      console.log('[Delayed Cleanup] No stale URL records to clean');
+    }
+  } catch (error) {
+    console.error('Error cleaning stale URL records:', error);
   }
 }
 
@@ -156,45 +204,51 @@ async function verifyAndRepairTimers() {
     let repaired = 0;
     
     for (const tab of tabs) {
-      if (tab.id === chrome.tabs.TAB_ID_NONE || isSystemPage(tab.url)) {
+      // Get effective URL - use pendingUrl if url is not available yet
+      const effectiveUrl = tab.url || tab.pendingUrl;
+      
+      if (tab.id === chrome.tabs.TAB_ID_NONE || (effectiveUrl && isSystemPage(effectiveUrl))) {
+        continue;
+      }
+      
+      // Skip tabs without URL (still loading)
+      if (!effectiveUrl) {
         continue;
       }
       
       // Check if tab has timer but URL doesn't (or vice versa)
       const hasTabTimer = !!tabActivity[tab.id];
-      const hasUrlTimer = tab.url && !!urlActivity[tab.url];
+      const hasUrlTimer = !!urlActivity[effectiveUrl];
       
-      if (tab.url) {
-        if (hasUrlTimer && !hasTabTimer) {
-          // URL has timer but tab doesn't - restore from URL
-          tabActivity[tab.id] = urlActivity[tab.url];
+      if (hasUrlTimer && !hasTabTimer) {
+        // URL has timer but tab doesn't - restore from URL
+        tabActivity[tab.id] = urlActivity[effectiveUrl];
+        repaired++;
+        console.log(`[Verify] Repaired: Restored timer for tab ${tab.id} from URL ${effectiveUrl}`);
+      } else if (hasTabTimer && !hasUrlTimer) {
+        // Tab has timer but URL doesn't - sync to URL
+        urlActivity[effectiveUrl] = tabActivity[tab.id];
+        repaired++;
+        console.log(`[Verify] Repaired: Synced timer from tab ${tab.id} to URL ${effectiveUrl}`);
+      } else if (!hasTabTimer && !hasUrlTimer) {
+        // Neither has timer - this is a truly new tab
+        // Only initialize if tab was created recently (within last 5 minutes)
+        // This prevents resetting timers for tabs that were just restored from session
+        const now = Date.now();
+        const fiveMinutesAgo = now - (5 * 60 * 1000);
+        
+        // Check if tab was created recently by checking if it has a recent timestamp in storage
+        // If not, it might be a restored tab - don't initialize
+        const tabCreatedRecently = tab.id && (!tabActivity[tab.id] || tabActivity[tab.id] > fiveMinutesAgo);
+        
+        if (tabCreatedRecently) {
+          tabActivity[tab.id] = now;
+          urlActivity[effectiveUrl] = now;
           repaired++;
-          console.log(`[Verify] Repaired: Restored timer for tab ${tab.id} from URL ${tab.url}`);
-        } else if (hasTabTimer && !hasUrlTimer) {
-          // Tab has timer but URL doesn't - sync to URL
-          urlActivity[tab.url] = tabActivity[tab.id];
-          repaired++;
-          console.log(`[Verify] Repaired: Synced timer from tab ${tab.id} to URL ${tab.url}`);
-        } else if (!hasTabTimer && !hasUrlTimer) {
-          // Neither has timer - this is a truly new tab
-          // Only initialize if tab was created recently (within last 5 minutes)
-          // This prevents resetting timers for tabs that were just restored from session
-          const now = Date.now();
-          const fiveMinutesAgo = now - (5 * 60 * 1000);
-          
-          // Check if tab was created recently by checking if it has a recent timestamp in storage
-          // If not, it might be a restored tab - don't initialize
-          const tabCreatedRecently = tab.id && (!tabActivity[tab.id] || tabActivity[tab.id] > fiveMinutesAgo);
-          
-          if (tabCreatedRecently) {
-            tabActivity[tab.id] = now;
-            urlActivity[tab.url] = now;
-            repaired++;
-            console.log(`[Verify] Repaired: Initialized timer for new tab ${tab.id} (${tab.url})`);
-          } else {
-            // Tab might be restored from session - don't reset timer
-            console.log(`[Verify] Skipped: Tab ${tab.id} might be restored from session, not initializing timer`);
-          }
+          console.log(`[Verify] Repaired: Initialized timer for new tab ${tab.id} (${effectiveUrl})`);
+        } else {
+          // Tab might be restored from session - don't reset timer
+          console.log(`[Verify] Skipped: Tab ${tab.id} might be restored from session, not initializing timer`);
         }
       }
     }
@@ -225,17 +279,20 @@ async function syncUrlBasedTracking() {
     const urlActivity = data['urlActivity'] || {};
     let synced = 0;
     
-    // Group tabs by URL
+    // Group tabs by URL (including pendingUrl for tabs still loading)
     const urlToTabs = new Map();
     for (const tab of tabs) {
-      if (tab.id === chrome.tabs.TAB_ID_NONE || isSystemPage(tab.url) || !tab.url) {
+      // Get effective URL - use pendingUrl if url is not available yet
+      const effectiveUrl = tab.url || tab.pendingUrl;
+      
+      if (tab.id === chrome.tabs.TAB_ID_NONE || !effectiveUrl || isSystemPage(effectiveUrl)) {
         continue;
       }
       
-      if (!urlToTabs.has(tab.url)) {
-        urlToTabs.set(tab.url, []);
+      if (!urlToTabs.has(effectiveUrl)) {
+        urlToTabs.set(effectiveUrl, []);
       }
-      urlToTabs.get(tab.url).push(tab.id);
+      urlToTabs.get(effectiveUrl).push(tab.id);
     }
     
     // For each URL, ensure all tabs with that URL have the same (oldest) timestamp
@@ -345,20 +402,24 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
 });
 
 chrome.tabs.onCreated.addListener(async (tab) => {
-  if (tab.id === chrome.tabs.TAB_ID_NONE || isSystemPage(tab.url)) {
+  // Get effective URL - use pendingUrl if url is not available yet
+  const effectiveUrl = tab.url || tab.pendingUrl;
+  
+  if (tab.id === chrome.tabs.TAB_ID_NONE || (effectiveUrl && isSystemPage(effectiveUrl))) {
     return;
   }
   // Initialize tracking for new tabs
-  // If tab has URL, track it immediately
+  // If tab has URL or pendingUrl, track it immediately
   // If tab doesn't have URL yet (still loading), wait a bit and retry
-  if (tab.url) {
+  if (effectiveUrl) {
     updateTabActivity(tab.id, false); // false = just initialize, don't reset if exists
   } else {
     // Tab is still loading, wait a bit and check again
     setTimeout(async () => {
       try {
         const updatedTab = await chrome.tabs.get(tab.id);
-        if (updatedTab && updatedTab.url && !isSystemPage(updatedTab.url)) {
+        const updatedUrl = updatedTab?.url || updatedTab?.pendingUrl;
+        if (updatedTab && updatedUrl && !isSystemPage(updatedUrl)) {
           updateTabActivity(tab.id, false);
         }
       } catch (error) {
@@ -373,9 +434,12 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   // This preserves inactivity time for tabs restored from session
   // We only track that tab exists, but don't reset its inactivity timer
   
+  // Get effective URL - use pendingUrl if url is not available yet
+  const effectiveUrl = tab.url || tab.pendingUrl;
+  
   // IMPORTANT: Only handle URL changes if it's a navigation (not just page reload)
   // Don't update on status changes - these happen automatically and shouldn't reset timers
-  if (changeInfo.url && tab.url && !isSystemPage(tab.url)) {
+  if (changeInfo.url && effectiveUrl && !isSystemPage(effectiveUrl)) {
     // URL changed - this might be navigation, but don't reset timer
     // Only ensure tab is tracked, preserve existing timestamp
     updateTabActivity(tabId, false); // false = preserve existing timestamp
@@ -404,12 +468,13 @@ async function updateTabActivity(tabId, isUserAction = false) {
     const tabActivity = data[STORAGE_KEY] || {};
     const urlActivity = data['urlActivity'] || {};
     
-    // Get tab URL for URL-based tracking
+    // Get tab URL for URL-based tracking (use pendingUrl if url is not available yet)
     let tabUrl = null;
     try {
       const tab = await chrome.tabs.get(tabId);
-      if (tab && tab.url && !isSystemPage(tab.url)) {
-        tabUrl = tab.url;
+      const effectiveUrl = tab?.url || tab?.pendingUrl;
+      if (effectiveUrl && !isSystemPage(effectiveUrl)) {
+        tabUrl = effectiveUrl;
       }
     } catch (error) {
       // Tab might be closed, ignore
@@ -489,17 +554,20 @@ async function checkAndCloseInactiveTabs() {
     const tabsToClose = [];
     
     for (const tab of tabs) {
+      // Get effective URL - use pendingUrl if url is not available yet
+      const effectiveUrl = tab.url || tab.pendingUrl;
+      
       // Skip closed tabs and system pages
-      if (tab.id === chrome.tabs.TAB_ID_NONE || isSystemPage(tab.url)) {
+      if (tab.id === chrome.tabs.TAB_ID_NONE || (effectiveUrl && isSystemPage(effectiveUrl))) {
         continue;
       }
       
       let lastActivity = tabActivity[tab.id];
       
       // Level 7: Verify timer exists before checking inactivity
-      if (!lastActivity && tab.url && urlActivity[tab.url]) {
+      if (!lastActivity && effectiveUrl && urlActivity[effectiveUrl]) {
         // Restore from URL-based tracking
-        lastActivity = urlActivity[tab.url];
+        lastActivity = urlActivity[effectiveUrl];
         tabActivity[tab.id] = lastActivity;
         console.log(`[Cleanup] Verified: Restored timer for tab ${tab.id} from URL before checking inactivity`);
       }
@@ -510,7 +578,7 @@ async function checkAndCloseInactiveTabs() {
       
       // If tab is inactive for more than set time
       if (lastActivity < inactiveThreshold) {
-        tabsToClose.push({ id: tab.id, url: tab.url });
+        tabsToClose.push({ id: tab.id, url: effectiveUrl });
       }
     }
     
@@ -665,28 +733,31 @@ async function getTabStats() {
     let verifiedCount = 0;
     
     for (const tab of tabs) {
-      if (tab.id === chrome.tabs.TAB_ID_NONE || isSystemPage(tab.url)) {
+      // Get effective URL - use pendingUrl if url is not available yet
+      const effectiveUrl = tab.url || tab.pendingUrl;
+      
+      if (tab.id === chrome.tabs.TAB_ID_NONE || (effectiveUrl && isSystemPage(effectiveUrl))) {
         continue;
       }
       
       let lastActivity = tabActivity[tab.id];
       
       // Level 5: Verify timer exists, if not try to restore from URL
-      if (!lastActivity && tab.url && urlActivity[tab.url]) {
+      if (!lastActivity && effectiveUrl && urlActivity[effectiveUrl]) {
         // Restore from URL-based tracking
-        lastActivity = urlActivity[tab.url];
+        lastActivity = urlActivity[effectiveUrl];
         tabActivity[tab.id] = lastActivity;
         verifiedCount++;
-        console.log(`[Stats] Verified: Restored timer for tab ${tab.id} from URL ${tab.url}`);
+        console.log(`[Stats] Verified: Restored timer for tab ${tab.id} from URL ${effectiveUrl}`);
       }
       const inactiveHours = lastActivity
         ? Math.max(0, (now - lastActivity) / (60 * 60 * 1000))
         : 0;
-      const title = tab.title || tab.url || 'Untitled tab';
+      const title = tab.title || effectiveUrl || 'Untitled tab';
       const tabDetail = {
         id: tab.id,
         title,
-        url: tab.url || '',
+        url: effectiveUrl || '',
         favicon: tab.favIconUrl || '',
         lastActivity: lastActivity || null,
         inactiveHours: Number(inactiveHours.toFixed(2)),
