@@ -8,6 +8,7 @@ const SYNC_INTERVAL = 5 * 60 * 1000; // Sync every 5 minutes
 
 let testTabIds = new Set();
 let lastSyncTime = 0;
+let tabPreviousUrls = new Map(); // Track previous URLs to detect actual navigation (not reloads)
 
 // Helper function to check if URL is a system page
 function isSystemPage(url) {
@@ -72,6 +73,8 @@ async function initializeTabActivity() {
       openTabIds.add(tab.id);
       if (tab.url) {
         openTabUrls.add(tab.url);
+        // Initialize previous URL tracking
+        tabPreviousUrls.set(tab.id, tab.url);
       }
       
       // Priority: URL-based tracking > ID-based tracking > new tab
@@ -352,6 +355,7 @@ chrome.tabs.onCreated.addListener(async (tab) => {
   // If tab has URL, track it immediately
   // If tab doesn't have URL yet (still loading), wait a bit and retry
   if (tab.url) {
+    tabPreviousUrls.set(tab.id, tab.url);
     updateTabActivity(tab.id, false); // false = just initialize, don't reset if exists
   } else {
     // Tab is still loading, wait a bit and check again
@@ -359,6 +363,7 @@ chrome.tabs.onCreated.addListener(async (tab) => {
       try {
         const updatedTab = await chrome.tabs.get(tab.id);
         if (updatedTab && updatedTab.url && !isSystemPage(updatedTab.url)) {
+          tabPreviousUrls.set(tab.id, updatedTab.url);
           updateTabActivity(tab.id, false);
         }
       } catch (error) {
@@ -369,16 +374,26 @@ chrome.tabs.onCreated.addListener(async (tab) => {
 });
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  // Don't update timestamp on page load - only when user activates tab
-  // This preserves inactivity time for tabs restored from session
-  // We only track that tab exists, but don't reset its inactivity timer
+  // Don't update timestamp on page load or reload - only when user navigates to different URL
+  // This preserves inactivity time for tabs restored from session or reloaded
   
-  // IMPORTANT: Only handle URL changes if it's a navigation (not just page reload)
+  // IMPORTANT: Only handle URL changes if URL actually changed (not just page reload)
   // Don't update on status changes - these happen automatically and shouldn't reset timers
   if (changeInfo.url && tab.url && !isSystemPage(tab.url)) {
-    // URL changed - this might be navigation, but don't reset timer
-    // Only ensure tab is tracked, preserve existing timestamp
-    updateTabActivity(tabId, false); // false = preserve existing timestamp
+    const previousUrl = tabPreviousUrls.get(tabId);
+    
+    // Only update if URL actually changed (different URL, not reload)
+    if (previousUrl !== tab.url) {
+      // URL changed to a different URL - this is navigation, preserve existing timestamp
+      updateTabActivity(tabId, false); // false = preserve existing timestamp
+      tabPreviousUrls.set(tabId, tab.url);
+    }
+    // If URL is the same (page reload), don't update activity - preserve timer
+  } else if (tab.url && !isSystemPage(tab.url)) {
+    // Track URL even if changeInfo.url is not set (initial load)
+    if (!tabPreviousUrls.has(tabId)) {
+      tabPreviousUrls.set(tabId, tab.url);
+    }
   }
   // Removed status === 'complete' handler - it was causing timers to reset on page reloads
 });
@@ -420,6 +435,8 @@ async function updateTabActivity(tabId, isUserAction = false) {
       tabActivity[tabId] = now;
       if (tabUrl) {
         urlActivity[tabUrl] = now;
+        // Update previous URL tracking
+        tabPreviousUrls.set(tabId, tabUrl);
       }
       console.log(`User activity on tab ${tabId}${tabUrl ? ` (URL: ${tabUrl})` : ''} - updated timestamp`);
     } else {
@@ -433,6 +450,8 @@ async function updateTabActivity(tabId, isUserAction = false) {
         tabActivity[tabId] = now;
         if (tabUrl) {
           urlActivity[tabUrl] = now;
+          // Update previous URL tracking
+          tabPreviousUrls.set(tabId, tabUrl);
         }
         console.log(`New tab ${tabId}${tabUrl ? ` (URL: ${tabUrl})` : ''} - starting tracking`);
       }
@@ -581,6 +600,9 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
       delete tabActivity[tabId];
       updated = true;
     }
+    
+    // Clean up previous URL tracking
+    tabPreviousUrls.delete(tabId);
     
     // Note: We can't get tab URL here since tab is already closed
     // URL-based cleanup will happen in initializeTabActivity on next startup
